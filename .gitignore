@@ -1,0 +1,29 @@
+# API Keys
+.env
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 测试缓存
+.pytest_cache/
+
+# IDE 配置
+.idea/
+
+# 中间产物和具体数据
+datas/output/
+datas/md
+# 杂项
+pip_install.log
+CLAUDE.md
+test.py
+datas/layout-parser-paper.pdf
+anotherREADME.md
+draw_png.py
+graph_rag1.png
+graph_rag2.png
+
+# Milvus 数据卷
+volumes/
