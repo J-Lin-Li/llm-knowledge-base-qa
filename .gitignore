@@ -15,15 +15,25 @@ __pycache__/
 # 中间产物和具体数据
 datas/output/
 datas/md
+# 遗留半导体领域测试数据（项目已切换至 K8s 知识库，与 datas/md 内容无关）
+datas/tech_report_*
 # 杂项
-pip_install.log
 CLAUDE.md
-test.py
 datas/layout-parser-paper.pdf
 anotherREADME.md
 draw_png.py
 graph_rag1.png
 graph_rag2.png
-
+pydantic_to_schema.py
+# 分析脚本临时输出（章节长度分位数统计原始数据，数字已写入 CLAUDE.md，脚本本身不引用这个文件）
+scratchpad_section_lengths.json
 # Milvus 数据卷
 volumes/
+# 运行时生成的链路追踪数据库
+tracing.db
+
+eval_results/
+
+# 开发期验证/消融脚本：内容比较杂（命名不统一、一次性调试脚本混杂），且是验证过程的
+# 副产物，不是系统本身运行需要的代码，仓库发布主体是系统代码，不是这些脚本
+verify/

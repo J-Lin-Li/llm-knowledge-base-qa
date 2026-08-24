@@ -1,3 +1,5 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
 aiofiles==24.1.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.11.16
@@ -56,7 +58,8 @@ langchain-text-splitters==0.3.8
 langchain-unstructured==0.1.6
 langdetect==1.0.9
 langgraph==0.3.30
-langgraph-checkpoint==2.0.24
+langgraph-checkpoint==2.1.2
+langgraph-checkpoint-postgres==2.0.25
 langgraph-prebuilt==0.1.8
 langgraph-sdk==0.1.61
 langsmith==0.3.24
@@ -86,6 +89,9 @@ prompt_toolkit==3.0.50
 propcache==0.3.1
 protobuf==6.30.2
 psutil==7.0.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+psycopg-pool==3.3.1
 pure_eval==0.2.3
 pycparser==2.22
 pydantic==2.11.2
@@ -120,6 +126,10 @@ tenacity==9.1.2
 threadpoolctl==3.6.0
 tiktoken==0.9.0
 tokenizers==0.21.1
+# torch: 此文件的 2.6.0 是 CPU-only 构建（PyPI 默认索引没有 CUDA 版）。
+# 若机器有 NVIDIA GPU，装完 requirements 后需额外执行（不改版本号，只换 build variant）：
+#   pip install --force-reinstall --no-deps torch==2.6.0 --index-url https://download.pytorch.org/whl/cu118
+# 详见 CLAUDE.md 十八节，CrossEncoder 重排实测提速约 10 倍（3.4s→约340ms/单对）。
 torch==2.6.0
 tqdm==4.67.1
 traitlets==5.14.3
