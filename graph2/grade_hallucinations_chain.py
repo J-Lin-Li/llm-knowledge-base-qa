@@ -1,3 +1,5 @@
+from typing import Literal
+
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import Field, BaseModel
 
@@ -8,7 +10,12 @@ from llm_models.all_llm import llm
 class GradeHallucinations(BaseModel):
     """对生成回答中是否存在幻觉进行二元评分"""
 
-    binary_score: str = Field(
+    # 字段类型从 str 收紧为 Literal["yes","no"]（2026-09-12）：原来靠 prompt
+    # 指令约束模型只填 yes/no，字段本身不是强枚举，模型往这个字段里塞解释文字
+    # 在类型层面是合法的——万一真的塞了，还可能带出原文片段。改成 Literal 后，
+    # 模型返回非 yes/no 会在 Pydantic 校验阶段直接报错，而不是被无声地存下来。
+    # 报错本身怎么处理见 api/app.py 的 _bg_quality_check（异常信息不直接落库）。
+    binary_score: Literal["yes", "no"] = Field(
         description="回答是否基于事实，取值为'yes'或'no'"
     )
 

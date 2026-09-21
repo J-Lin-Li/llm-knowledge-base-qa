@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from langchain_core.runnables import RunnableConfig
 
 from tools.retriever_tools import get_sibling_chunks
-from tracing.db import get_parent_chunk, insert_span
+from tracing.db import get_doc_record, get_parent_chunk, insert_span
 from utils.log_utils import log
 
 # 必须和 documents/markdown_parser.py 里的同名常量保持一致——两处独立定义是因为
@@ -161,6 +161,17 @@ def assemble_context(state, config: RunnableConfig = None):
     # 混合检索同理）。父块全文不进 trace，只存 parent_id，需要时按 id 回查（延续
     # 十节 D1 原则：retrieval span 存全文，下游 span 只存引用）。
     if ctx:
+        # 复现时用来判断"知识库是否已经变过"，不是判断内容对不对——doc_id 对应的文档
+        # 如果后续被 upsert_document 更新或删除过，document_registry 里的 content_hash
+        # 会变（或整行消失），事后拿当前 hash 一比就知道这条 trace 还能不能信，不用真的
+        # 拼出一段可能已经过期的文本才发现不对（2026-09-12 补，配合上面的 neighbor_window）。
+        doc_versions = {}
+        for it in all_items:
+            did = it.get("doc_id")
+            if did and did not in doc_versions:
+                rec = get_doc_record(did)
+                doc_versions[did] = rec["content_hash"] if rec else None  # None=文档已不在库里
+
         insert_span({
             "trace_id": ctx.trace_id,
             "span_id": str(uuid.uuid4()),
@@ -177,6 +188,13 @@ def assemble_context(state, config: RunnableConfig = None):
                 "parent_count_after_dedup": len(all_items),
                 "parent_lengths": parent_lengths_log,
                 "hit_positions_in_parent": hit_positions_log,
+                "doc_versions": doc_versions,
+                # 退化路径（parent 超 PARENT_UPPER_BOUND）事后复现要用 hit_positions_in_parent
+                # 重新算一遍"命中位置前后留几个"，靠的是 NEIGHBOR_WINDOW 这个参数——只存命中
+                # 位置、不存当时用的参数值，以后这个参数被调过，重算出来的窗口就和当时实际
+                # 喂给 LLM 的不是同一个，且没有任何提示。这里把当时实际用的值冻结进记录，
+                # 复现时用记录里的值，不用现在代码里的值（2026-09-12 补）。
+                "neighbor_window": NEIGHBOR_WINDOW,
                 "final_order": [
                     {"parent_id": it["parent_id"], "doc_id": it["doc_id"], "degraded": it["degraded"]}
                     for it in final_contexts

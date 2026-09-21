@@ -79,4 +79,4 @@ services:
 
 networks:
   default:
-    name: milvus
+    name: rag-milvus-net

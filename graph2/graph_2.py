@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph
 from tracing.context import TraceContext
 from tracing.handler import TraceHandler
 from tracing.db import create_session, list_sessions
-from utils.env_utils import POSTGRES_URI
+from utils.env_utils import POSTGRES_URI, ENABLE_WEB_SEARCH
 
 # from draw_png import draw_graph
 from graph2.assemble_context_node import assemble_context
@@ -30,8 +30,13 @@ def route_from_hallucination(state):
 
     generation_count 已由 generate 节点自增，此处只做检查：
       - "yes"（无幻觉）→ check_answer
-      - "no"（有幻觉）且 generation_count < 3 → generate 重试
-      - "no"（有幻觉）且 generation_count >= 3 → hallucination_fallback（兜底）
+      - "no"（有幻觉）且 generation_count < 2 → generate 重试
+      - "no"（有幻觉）且 generation_count >= 2 → hallucination_fallback（兜底）
+
+    上限从 3 收紧到 2（即最多重试 1 次）：2026-09-11，为压缩评估成本 + 降低
+    LangGraph recursion_limit 被打满的概率——200 题试跑里 8/80 次运行触发
+    `Recursion limit of 25 reached`，根因是本计数器和 not_useful_count 的
+    最坏组合步数能逼近 25（见 CLAUDE.md 二十六节）。
     """
     generation_count = state.get("generation_count", 0)
     hallucination_result = state.get("hallucination_result", "no")
@@ -39,8 +44,8 @@ def route_from_hallucination(state):
     if hallucination_result == "yes":
         log.info("---判定：生成内容基于参考文档，进入答案质量评估---")
         return "check_answer"
-    elif generation_count >= 3:
-        log.info("---幻觉检测已重试3次，强制结束---")
+    elif generation_count >= 2:
+        log.info("---幻觉检测已重试1次，强制结束---")
         return "hallucination_fallback"
     else:
         log.info(f"---判定：有幻觉，第{generation_count}次，重新生成---")
@@ -53,8 +58,11 @@ def route_from_answer(state):
 
     not_useful_count 由 transform_query 节点自增，此处读取的是本轮 transform 之前的值：
       - "yes"（解决了问题）→ END
-      - "no"（未解决）且 not_useful_count < 2 → transform_query（后续节点会自增计数器）
-      - "no"（未解决）且 not_useful_count >= 2 → not_useful_fallback（兜底）
+      - "no"（未解决）且 not_useful_count < 1 → transform_query（后续节点会自增计数器）
+      - "no"（未解决）且 not_useful_count >= 1 → not_useful_fallback（兜底）
+
+    上限从 2 收紧到 1（即最多重试 1 次）：理由同 route_from_hallucination 的改动
+    （2026-09-11，压缩评估成本 + 降低 recursion_limit 风险，见 CLAUDE.md 二十六节）。
     """
     not_useful_count = state.get("not_useful_count", 0)
     answer_result = state.get("answer_result", "no")
@@ -62,8 +70,8 @@ def route_from_answer(state):
     if answer_result == "yes":
         log.info("---判定：生成内容准确回答问题---")
         return "useful"
-    elif not_useful_count >= 2:
-        log.info("---答案质量改写已达2次上限，强制结束---")
+    elif not_useful_count >= 1:
+        log.info("---答案质量改写已达1次上限，强制结束---")
         return "transform_max_retries"
     else:
         log.info(f"---判定：答案未解决问题，第{not_useful_count}次，改写查询---")
@@ -87,6 +95,9 @@ def decide_to_generate(state):
 
     if not filtered_documents:  # 如果没有相关文档
         if transform_count >= 1:
+            if not ENABLE_WEB_SEARCH:
+                log.info("---决策：所有文档都与问题无关，已改写1次，但当前部署已关闭web降级，直接返回未找到---")
+                return "web_search_fallback"
             log.info("---决策：所有文档都与问题无关，已改写1次，转为web查询问题---")
             return "web_search"
         log.info("---决策：所有文档都与问题无关，将转换查询问题---")
@@ -227,6 +238,7 @@ workflow.add_conditional_edges(
         "generate": "assemble_context",
         "transform_query": "transform_query",
         "web_search": "web_search",
+        "web_search_fallback": "web_search_fallback",  # ENABLE_WEB_SEARCH=false 时的直接降级
     },
 )
 
@@ -300,6 +312,7 @@ if __name__ == '__main__':
             handler = TraceHandler(ctx)
             config = {
                 "callbacks": [handler],
+                "recursion_limit": 50,
                 "configurable": {"thread_id": session_id, "trace_ctx": ctx, "dept_id": MOCK_USER["dept_id"]},
             }
 

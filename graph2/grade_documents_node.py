@@ -1,3 +1,5 @@
+import random
+
 from langchain_core.runnables import RunnableConfig
 
 from utils.log_utils import log
@@ -65,6 +67,20 @@ def grade_documents(state, config: RunnableConfig = None):
 
     configurable = (config or {}).get("configurable", {})
     enable_relevance_filter = configurable.get("enable_relevance_filter", True)
+    random_drop = configurable.get("random_drop", False)
+
+    if random_drop:
+        # 混淆分离对照组（CLAUDE.md 二十六节）：阈值过滤会同时改变两件事——
+        # ①去掉低相关的 chunk，②让进生成的 context 变短。faithfulness 的提升
+        # 里这两个效应叠在一起分不开。这里保持"进生成的条数"和阈值组一致
+        # （= len(filtered_docs)），但改成从原始候选里随机取，只换"选择方式"。
+        # 阈值组显著好于本组 → 提升是相关性驱动的；两组接近 → 是 context 变短
+        # 的算术效应。按 question 播种保证同一题每次运行丢弃结果一致，可复现。
+        keep_n = len(filtered_docs)
+        rng = random.Random(question)
+        kept = rng.sample(documents, keep_n)
+        log.info(f"---random-drop 消融：阈值本会留 {keep_n} 条，改为随机留 {keep_n}/{len(documents)} 条---")
+        return {"documents": kept, "question": question}
 
     if not enable_relevance_filter:
         # 消融：覆盖度已经由上面这次比较确认足够（filtered_docs 非空），这里不

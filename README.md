@@ -14,7 +14,7 @@
 - **混合检索 + Reranker 精排**：BM25 稀疏向量 + BGE 语义向量双路检索（各自召回 50 条），RRF（k=60）融合截断 20 条后经 BGE CrossEncoder 精排取 top-4；`grade_documents` 节点直接复用精排分数做阈值过滤，不再二次调 LLM
 - **Small-to-big 父子分块**：检索单元是 200~300 字的小块（对齐 embedding/精排模型的最大输入长度），命中后按 `parent_id` 取回所在章节的父块（≤2000 字，超长退化为"命中小块+相邻小块"）供 LLM 生成，兼顾检索精度和生成上下文完整性
 - **自纠正 RAG**：生成后经两道独立门禁节点——幻觉检测（`check_hallucination`）+ 答案质量评估（`check_answer`），不合格自动重试；两者均可通过 `config` 开关单独启停，关闭时改为响应后异步补跑（见「FastAPI 服务」）
-- **Corrective RAG**：不做检索前路由，问题一律先检索，再用同一个 CrossEncoder 分数逐条过滤（`grade_documents`）——全部被过滤即判定知识库未覆盖，改写 1 次仍无结果自动降级 Tavily 网搜，网搜结果同样过一遍阈值过滤（`grade_web_results`）才进生成
+- **Corrective RAG**：不做检索前路由，问题一律先检索，再用同一个 CrossEncoder 分数逐条过滤（`grade_documents`）——全部被过滤即判定知识库未覆盖，改写 1 次仍无结果自动降级 Tavily 网搜，网搜结果同样过一遍阈值过滤（`grade_web_results`）才进生成；网搜降级本身可通过部署级开关 `ENABLE_WEB_SEARCH` 整体关闭（纯内部专有知识库场景避免用网上通用做法冒充内部规范作答，关闭后直接判定"未找到"，见「常见问题」）
 - **查询改写**：检索效果差时 LLM 分析语义意图重写 Query，再次检索（上限 1 次）
 - **有状态对话**：LangGraph `PostgresSaver` checkpointing，通过 `thread_id` 隔离多会话，进程重启可续接
 - **检索层权限过滤**：按 `dept_id` 做 Milvus pre-filter，越权文档在向量检索前即被排除，两路（dense + sparse）各自注入 expr
@@ -62,9 +62,9 @@
 
 | 计数器 | 上限 | 超限去向 |
 |--------|------|---------|
-| `transform_count` | 1次 | 降级 Tavily 网搜 |
-| `generation_count` | 3次 | `hallucination_fallback`，不再输出模型答案，改为输出检索到的原始资料 |
-| `not_useful_count` | 2次 | `not_useful_fallback`，输出"未找到相关资料"提示 |
+| `transform_count` | 1次 | 降级 Tavily 网搜（若 `ENABLE_WEB_SEARCH=false` 则直接判定未找到） |
+| `generation_count` | 2次（即最多重试1次）| `hallucination_fallback`，不再输出模型答案，改为输出检索到的原始资料 |
+| `not_useful_count` | 1次（即最多重试1次）| `not_useful_fallback`，输出"未找到相关资料"提示 |
 
 `check_hallucination`、`check_answer` 是两个独立节点（各自独立 span，token 可分别统计），而非合并在一个条件边函数里；两者均可通过 `config["configurable"]["enable_hallucination_check"/"enable_answer_check"]` 关闭，跳过 LLM 调用直接判定通过（生产快速路径用）。
 
@@ -294,6 +294,12 @@ docker compose restart
 ```bash
 python manage_docs.py list
 ```
+
+---
+
+**Q：想彻底关闭网络搜索降级，只用知识库自己的内容回答**
+
+设置 `ENABLE_WEB_SEARCH=false`（`.env` 或环境变量）后重启服务。此时知识库未覆盖（改写1次仍无相关文档）会直接判定"未找到相关资料"，不再降级 Tavily 网搜——适合纯内部专有知识库场景，避免网上搜到的通用做法和内部规范冲突。默认是 `true`，保持网搜降级行为。这是进程启动时读一次的部署级配置，不支持单次请求覆盖。
 
 ---
 

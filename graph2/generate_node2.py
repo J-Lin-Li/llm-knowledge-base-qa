@@ -23,6 +23,24 @@ _GROUNDED_RETRY_TEMPLATE = (
 )
 
 
+def format_docs(documents, parent_contexts):
+    """
+    格式化喂给 LLM 的上下文——small-to-big：优先用 parent_contexts（父块内容，已按
+    D7 排序、去重）；web_search 路径没有 parent_contexts（不经过 assemble_context），
+    回退到小块本身——web_search 节点现在也总是返回 Document 列表（精排后的若干段），
+    和知识库路径同构，不再有"单个 Document 不是列表"的情况。
+
+    模块级函数（2026-09-12 从 generate() 内部提出来，供外部复用）：generate 真正读的
+    就是这个函数的输出。任何需要还原"LLM 实际看到了什么"的地方（比如异步质检要判断
+    答案有没有依据）都必须调用这同一个函数，不能自己另写一份格式化逻辑——否则会重蹈
+    api/app.py 的 _bg_quality_check 曾经踩过的坑：判断依据（小块）和 generate 真正用的
+    材料（父块）不是同一份，判断结果没有意义。
+    """
+    if parent_contexts:
+        return "\n\n".join(item["content"] for item in parent_contexts)
+    return "\n\n".join(doc.page_content for doc in documents)
+
+
 def generate(state):
     """
     生成回答
@@ -38,16 +56,6 @@ def generate(state):
 
     template = _GROUNDED_RETRY_TEMPLATE if generation_count > 0 else _BASE_TEMPLATE
     prompt = PromptTemplate(template=template, input_variables=["question", "context"])
-
-    # 后处理函数 - 格式化上下文
-    # small-to-big：优先用 parent_contexts（父块内容，已按 D7 排序、去重）；
-    # web_search 路径没有 parent_contexts（不经过 assemble_context），回退到小块本身——
-    # web_search 节点现在也总是返回 Document 列表（精排后的若干段），和知识库路径同构，
-    # 不再有"单个 Document 不是列表"的情况。
-    def format_docs(docs, parent_contexts):
-        if parent_contexts:
-            return "\n\n".join(item["content"] for item in parent_contexts)
-        return "\n\n".join(doc.page_content for doc in docs)
 
     # 构建RAG处理链
     rag_chain = (

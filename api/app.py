@@ -32,6 +32,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from pydantic import BaseModel
 
 from graph2.graph_2 import workflow
+from graph2.generate_node2 import format_docs
 from graph2.grade_hallucinations_chain import hallucination_grader_chain
 from graph2.grade_answer_chain import answer_grader_chain
 from tracing.context import TraceContext
@@ -98,6 +99,7 @@ def _run_graph(question: str, session_id: str, dept_id: str,
     }
     config = {
         "callbacks": [handler],
+        "recursion_limit": 50,
         "configurable": {
             "thread_id": session_id,
             "trace_ctx": ctx,
@@ -112,7 +114,8 @@ def _run_graph(question: str, session_id: str, dept_id: str,
 
 # ── 后台质量监控 ───────────────────────────────────────────────────────────────
 
-def _bg_quality_check(answer: str, question: str, documents: list, trace_id: str, thread_id: str) -> None:
+def _bg_quality_check(answer: str, question: str, documents: list, context_text: str,
+                      trace_id: str, thread_id: str) -> None:
     """跳过阻塞检测时，在后台异步跑幻觉检测 + 答案质量，结果写入 tracing.db（结构化、
     可按 trace_id/时间查询），不再只写应用日志——log 是即时可读但不可聚合分析，
     真要看"过去一周幻觉率"这类趋势，得有结构化存储才行。
@@ -122,13 +125,19 @@ def _bg_quality_check(answer: str, question: str, documents: list, trace_id: str
 
     parent_span_id 给 None：这次检查发生在原始请求已经返回之后，不是嵌套在
     那次请求实时的调用栈里，没有一个"正在进行中"的父 span 可挂。
+
+    context_text 必须用 generate_node2.format_docs 格式化过（2026-09-12 修复）：
+    之前这里直接传 documents（检索到的小块）给幻觉检测判断依据，但本地路径下
+    generate 真正读的是 parent_contexts（assemble_context 拼的父块）——判断依据
+    和 LLM 实际看到的材料不是同一份，判断结果没有意义。documents 参数继续保留，
+    只用于下面 doc_id/数量这两个不含原文的元数据，不再喂给打分链。
     """
     span_id = str(uuid.uuid4())
     t0 = time.monotonic()
     output = None
     error_msg = None
     try:
-        h = hallucination_grader_chain.invoke({"documents": documents, "generation": answer})
+        h = hallucination_grader_chain.invoke({"documents": context_text, "generation": answer})
         a = answer_grader_chain.invoke({"question": question, "generation": answer})
         output = {"hallucination": h.binary_score, "answer_quality": a.binary_score}
         log.info(
@@ -136,8 +145,14 @@ def _bg_quality_check(answer: str, question: str, documents: list, trace_id: str
             f"幻觉={h.binary_score} 答案质量={a.binary_score}"
         )
     except Exception as e:
-        error_msg = str(e)
+        # 完整异常信息只进应用日志（本地排查用，留存短、访问面窄），不落进 error_msg——
+        # 打分链的字段已收紧为 Literal["yes","no"]（见 grade_hallucinations_chain.py），
+        # 模型返回格式不对会在这里抛校验异常，而校验库的报错习惯是把"收到的原始值"
+        # 打印在异常文本里；如果那个值是模型把解释文字（可能夹带原文片段）塞进了本该
+        # 是 yes/no 的字段，异常文本原样存进 tracing.db 就是把刚堵住的口子在这里重新
+        # 打开。持久化的记录只留失败类型（类名），不留异常原文。
         log.warning(f"[BG质检] 失败 trace={trace_id[:8]}: {e}")
+        error_msg = f"评分格式或调用异常（{type(e).__name__}），本次质检结果不可用"
 
     insert_span({
         "trace_id": trace_id,
@@ -165,9 +180,12 @@ def _bg_quality_check(answer: str, question: str, documents: list, trace_id: str
 
 
 # ── 接口 ───────────────────────────────────────────────────────────────────────
+from tools.retriever_tools import ALLOWED_DEPTS
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    if request.dept_id not in ALLOWED_DEPTS:
+        raise HTTPException(status_code=400, detail="unknown dept_id")
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
@@ -191,11 +209,16 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     # 快速路径跳过了质量门禁时，按采样率决定是否后台异步补跑监控
     if (not request.enable_hallucination_check or not request.enable_answer_check) \
             and random.random() < BG_QUALITY_SAMPLE_RATE:
+        # 用 generate 实际用过的同一个格式化函数还原 context，而不是直接传 documents
+        # （小块）——本地路径下 generate 真正读的是 parent_contexts（父块），判断依据
+        # 必须和它对齐，否则判断的不是 LLM 真正看到的材料（2026-09-12 修复）。
+        context_text = format_docs(final_state.get("documents", []), final_state.get("parent_contexts"))
         background_tasks.add_task(
             _bg_quality_check,
             answer,
             request.question,
             final_state.get("documents", []),
+            context_text,
             trace_id,
             session_id,
         )

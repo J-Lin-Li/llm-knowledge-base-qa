@@ -1,3 +1,5 @@
+from typing import Literal
+
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import Field, BaseModel
 
@@ -8,7 +10,9 @@ from llm_models.all_llm import llm
 class GradeAnswer(BaseModel):
     """评估回答是否解决用户问题的二元评分模型"""
 
-    binary_score: str = Field(
+    # 同 grade_hallucinations_chain.py 的 GradeHallucinations，字段类型收紧为
+    # Literal["yes","no"]（2026-09-12），理由见那边的注释。
+    binary_score: Literal["yes", "no"] = Field(
         description="回答是否解决了问题，取值为'yes'或'no'"
     )
 
